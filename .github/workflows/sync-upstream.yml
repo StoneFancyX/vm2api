@@ -1,0 +1,61 @@
+# 定时把上游 dofastted/vm2api 的 main 合并进本 fork 的 main。
+#
+# 为什么用 merge-upstream 而不是 git fetch + merge + push（实测结论）：
+#   GitHub App 类型的 GITHUB_TOKEN 无权推送任何 .github/workflows/** 改动
+#   （报 "refusing to allow a GitHub App to create or update workflow ... without
+#   `workflows` permission"），而上游每次发版都在改 workflow 文件，所以 git push
+#   路径必然间歇性失败、且失败后会一直卡住。merge-upstream 走服务端合并，实测带
+#   workflow 改动的快进（fast-forward）与分叉合并（merge）都能通过，无需 PAT。
+#
+# 本文件自身让 main 领先上游一个提交，因此永远不可能快进——正常路径就是 merge。
+name: sync-upstream
+
+on:
+  schedule:
+    # 每 2 小时一次（UTC）。上游 2026-10-15 单日 20 次提交，2 小时足够。
+    - cron: '23 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: merge upstream main into this fork
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          before=$(gh api "repos/$REPO/commits/main" --jq '.sha')
+          resp=$(gh api -X POST "repos/$REPO/merge-upstream" -f branch=main 2>&1); rc=$?
+          echo "$resp"
+          if [ "$rc" -ne 0 ]; then
+            # 409 + "not behind" 表示上游没有新提交（本方领先或持平），不是故障。
+            if printf '%s' "$resp" | grep -qi 'not behind the upstream'; then
+              echo "already up to date"
+              after="$before"
+            else
+              echo "::error::merge-upstream failed (rc=$rc)"
+              exit 1
+            fi
+          else
+            after=$(gh api "repos/$REPO/commits/main" --jq '.sha')
+          fi
+          {
+            echo "### sync-upstream"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| before | \`${before:0:10}\` |"
+            echo "| after  | \`${after:0:10}\` |"
+            echo "| result | ${resp} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "main: ${before:0:10} -> ${after:0:10}"
