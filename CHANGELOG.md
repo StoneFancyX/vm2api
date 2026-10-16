@@ -1,6 +1,33 @@
 # Changelog
 
 ## 未发布
+- 测试链接按槽位定时真实对话（延续 #467 / REQ-0466）：面板结构化调度（每小时/每天/每周 + IANA 时区，无 Cron 文本框），SettingsRepo 持久化，到点 `runVmTestChat`；全局默认模板与「同步调度时间到全部/所选槽」（仅覆盖调度字段）。依赖 `croner@10.0.1`。（#466）
+- 已有 Docker 槽可通过面板 `PATCH /api/panel/vms/:id`（`machine.memory`）或槽位详情「内存 → 提升」在线上调容器内存：先 `docker update --memory … --memory-swap …`，读回 `HostConfig.Memory` 一致后才写入 `machine.memory` / `runtime.memory`；失败不写配置。不支持降配或 KVM。（#441）
+- 面板新增 admin 专用 Anthropic 控制台（`POST /api/panel/anthropic/messages`，与 VM 测试分离；经控制面转发上游，浏览器不直连）；推理路由收紧：仅 managed 且 category 为 `api` 的协议密钥走已配置的 API 上游，master key 与 `x-kin-backend=api` 不再强制 API 后端（改走 OAuth/VM）。（#478）
+- 修复槽位开机成功后仍保留旧 PID、启动时间或停止标记：保存普通槽与 Codex 启动返回的运行信息，并保留等待就绪期间已写入的运行字段，避免在线升内存后 `runtime.memory` 被旧启动快照覆盖；凭证调度规则不变。（#479）
+- 修复 KVM / Docker 槽容器处于 `Restarting` 崩溃循环时被当成运行中：`inspectContainer()` 读取 `State.Restarting`，崩溃循环的容器视为未运行，启动和重载改为重建，不再 `already-running` 短路或对重启中的容器 `docker exec`。新建槽位容器前先 `docker pull` 浮动 tag（`kin-kvm-*` / `kin-os-*`），拉取失败才用本地镜像，旧 runner 镜像可随重建更新；`docker/kin-*/build.mjs --pull` / `--pull-only` 也会刷新已存在的镜像。`kin-kvm-entry` 降权前对容器内 `/dev/kvm` 节点执行 `chmod g+rw`，兼容宿主 `0600` 权限。（#484）
+
+## 1.3.179 — 2026-10-16
+
+- 修复 Claude Code cli-hop 最终出站丢失 thinking 指纹：首个 hop 保留已有签名块，缺少 `signature` 字段时补 `signature: ""`，只有 repaired 重试清理 thinking 历史；`cli-node` 既有登录 / fallback 清理逻辑不变。cli-hop 不再自动开启 signature_repair，须 `routing.failover.signature_repair=true` 才同槽重试，否则签名 400 透传。（#475）
+- 新增实际 kernel ELF → cli-node ELF → 本地 upstream capture 回归，覆盖已有签名、缺失字段、空 thinking 与 `redacted_thinking` 的最终 wire。
+- 集群节点可以创建 GPT 槽。节点容器只保留身份和出口（`sleep infinity`，标签 `kin.vm.role=codex`），Codex kernel 仍在控制面监听 `vms/<id>/run/codex-kernel.sock`。节点选「本机出口」时 kernel 走该节点的转发，不再从控制面直连。旧的节点 GPT 容器（PID 1 仍是 kin-kernel）在下次启动或重载时重建。KVM 不使用该标签，新建后再次启动不会被重建。crag 数据面、官方 CC 初装、wrap 修复和推理引擎切换仍只在本机。（#473）
+- 移除公开树中的闭源探针脚本 `scripts/verify-local-rust-slot.sh`（无运行时变化）。（#472）
+
+已部署机升级：更新 Node 控制面与 `web/dist`，重启一次 Node。旧节点 Docker GPT 槽下次启动或重载会按新规格重建。cli-hop / 面板首 hop 保留 thinking 指纹；签名 400 默认透传（须开启「探测→签名修复」才同槽重试）。无迁移、无新依赖，不必 `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.178 — 2026-10-16
+
+- 补齐 `kin-computer` 二进制交付：加入校验固定的 payload、Release 附件及控制面镜像，入口自动安装到 `bin/kin-computer`，默认不再依赖私有 `local-src/`。源码仍不公开，`KIN_COMPUTER_BIN` 可覆盖路径。二进制按 Debian 12 基线构建，避免新版 glibc 导致启动失败；不改已有槽位身份。
+
+已部署机升级：更新控制面镜像，或更新 Node 控制面并执行 `npm run fetch:payload` 安装 `bin/kin-computer`，重启一次 Node。无迁移、无新依赖，不必 `wrap-cli/sync`，不必重建槽位容器。已有计算机身份不变；不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.177 — 2026-10-16
+
+- 调试日志容量按 `OCTET_LENGTH` 字节统计，避免多字节正文误算与同步清理读入全文。（#462）
+- 修复 Claude 配额闸线弹窗在短视口下无法滚到底部（明确高度 + grid 三行布局）。（#465）
+
+已部署机升级：更新 Node 控制面与 `web/dist`，重启一次；无迁移、无新依赖，不必 `wrap-cli/sync`；不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.176 — 2026-10-15
 
