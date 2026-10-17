@@ -94,7 +94,7 @@
 | POST | `/vms/:id/allocate-proxy` | 从池分配 SOCKS5 |
 | POST | `/vms/:id/update-claude-code` | 410，`claude_cli_removed` |
 | DELETE | `/vms/:id` | 不能删 active；只解绑本槽代理 |
-| POST | `/vms/create` | 种子 VM + Claude Code home；依赖私有 `kin-computer`。未安装返回 400 `computer_service_missing`，身份生成失败返回 400 `computer_create_failed` |
+| POST | `/vms/create` | 种子 VM + Claude Code home；依赖私有 `kin-computer`。未安装返回 400 `computer_service_missing`，身份生成失败返回 400 `computer_create_failed`。Docker 槽可在 `machine` 里可选传 `docker_cpus`（见下） |
 | POST | `/vms/import` | sessionKey 导入（必须已有 VM+代理） |
 | GET | `/vms/fleet-status` | 全槽更新状态 |
 | POST | `/vms/fleet-update` | 全槽 roll / 采集 |
@@ -129,6 +129,9 @@ Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI 
 
 `POST /vms/create` 指定 `platform: "openai"`，省略并发/RPM/会话上限即跟随已保存的 OpenAI 全局值；显式值钉住本槽。OpenAI 凭证导入/重导入保留既有覆盖和权重，未覆盖字段采用当前 OpenAI 全局值；不新增跨平台切换入口。
 
+### Docker 槽可选 CPU 上限
+
+`POST /vms/create`（`runtime_type: "docker"`）可在 `machine` 与 `memory` 同级显式传 `docker_cpus`：`0` 或省略表示不限 CPU（与升级前一致）；`0.01`–`16` 为 CPU 时间硬上限（如 `0.5` 表示最多占用半颗宿主机 CPU 的时间，非独占核）。字符串、非有限数、越界或 KVM 创建携带该字段返回 400 `invalid_machine`。仅当请求体显式带上时才写入 `machine.docker_cpus`；不会把 KVM 的 `machine.vcpus` 隐式转成 Docker 上限。配额在**容器创建或 recreate**（含 `POST /vms/:id/reset`、带 recreate 的 start/reload、看门狗/恢复路径上的重建）时落到本地 `--cpus` 或集群 Engine `HostConfig.NanoCpus`；对已存在容器的普通 start、kernel 重启或控制面重启**不会**在线改限额，且无 `PATCH` 改配额入口。列表/详情回显已保存的 `machine.docker_cpus`。若落盘值损坏或越界，`POST /vms/:id/reload`、恢复/重建相关路径会在触达容器前先拒绝并返回 `invalid_machine`。
 
 `GET /vms/:id` 的 `kernel.rust_health` 来自 wrap `/internal/health`：`reachable`（进程在且 `ready_slots>=1`）、`process_up`、`provider`（cli-hop 为 `local_cli`）、`ready_slots`、`cli_pid`、`worker_version`。Go hop 没有 slot 字段。`reachable=false` 且 `process_up=true` 表示 kernel 在、CLI 槽未就绪。
 
@@ -404,9 +407,15 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 ### `POST /proxies/geo` · `POST /proxies/:id/geo`
 
-经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。IPv4 结果落在 `proxies.geo_*` 列，IPv6 公网出口落在 `proxies.geo_v6_*` 列；列表响应分别回显 `geo` 与 `geo_v6`。IPv6 探测先经仅 AAAA 的 IP 探针（默认 `https://ipv6.icanhazip.com`，可用 `KIN_PROXY_GEO_V6_IP_URL` 覆盖）确认出口为 IPv6，再查该地址的地理信息；探针若返回 IPv4 记 `geo_v6.error=geo_ipv6_got_ipv4`，无 IPv6 出口时记传输 / HTTP 错误，不会把 IPv4 结果写入 `geo_v6`。单条 IPv4 成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区（仍跟随 IPv4 出口时区，不用 IPv6 覆盖）。
+地理查询的 SOCKS5 目标域名统一由代理端解析（包括 `socks5://` 输入），避免依赖控制面的本地 DNS；IPv4 查询和 IPv6 两阶段探测使用相同策略。此规则仅作用于地理查询，不修改保存的代理 URI 或其它请求的 DNS 策略。HTTP(S) 代理和本地直连行为不变。
 
-响应 `{ proxy, geo, geo_v6, cached, timezones }`（单条）或 `{ total, results }`（批量，每项含 `geo_v6`）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`（IPv4 查询失败时 HTTP 502；IPv6 不可用时在 `geo_v6.error` 中体现，单条请求仍可能 HTTP 200）。`force: true` 忽略缓存重查。
+经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。主查询结果落在 `proxies.geo_*` 列，独立的 IPv6 公网出口探测落在 `proxies.geo_v6_*` 列；列表响应分别回显 `geo` 与 `geo_v6`。IPv6 探测先经仅 AAAA 的 IP 探针（默认 `https://ipv6.icanhazip.com`，可用 `KIN_PROXY_GEO_V6_IP_URL` 覆盖）确认出口为 IPv6，再查该地址的地理信息；探针若返回 IPv4 记 `geo_v6.error=geo_ipv6_got_ipv4`，无 IPv6 出口时记传输 / HTTP 错误，不会把 IPv4 结果写入 `geo_v6`。主查询成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区；独立的 `geo_v6` 结果不覆盖它。
+
+仅 IPv6 出口可能无法访问默认地理服务 `ip-api.com` 的 IPv4 接口。可在控制面 `.env` 设置 `KIN_PROXY_GEO_V6_LOOKUP_MODE=control-plane` 并重新创建控制面容器（直接运行时重启对应进程）：IPv6 IP 探针仍经所选代理访问（包括代理认证），只有确认 IPv6 后的地理元数据查询走控制面默认路由。此模式会向地理服务提交已确认的出口 IPv6；槽位业务流量的出口不受影响。默认值 `proxy` 保持两个阶段都经代理，IPv6 查询收到其它模式值时返回 `geo_ipv6_invalid_lookup_mode`。
+
+启用 `control-plane` 后，主查询访问默认 `KIN_PROXY_GEO_URL` 发生传输错误时，也会尝试上述 IPv6 探测与元数据查询，成功结果写入 `geo`，因此主结果可能是 IPv6。HTTP / 服务商错误及自定义主查询 URL 不触发该回退。IPv6 元数据默认查询 `http://ip-api.com/json/{ip}?fields=...`；可用 `KIN_PROXY_GEO_V6_URL` 指定 URL，其中 `{ip}` 会替换为探针确认的地址（URL 编码）。响应必须包含相同的 IPv6（允许等价的缩写 / 展开形式）；返回 IPv4 记 `geo_ipv6_got_ipv4`，缺失或不匹配记 `geo_ipv6_ip_mismatch`，不会把控制面自身的 IP 当成代理出口。
+
+响应 `{ proxy, geo, geo_v6, cached, timezones }`（单条）或 `{ total, results }`（批量，每项含 `geo_v6`）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`（主查询失败时 HTTP 502；独立 IPv6 探测不可用时在 `geo_v6.error` 中体现，单条请求仍可能 HTTP 200）。`force: true` 忽略缓存重查。
 
 ### `PUT /proxies/:id`
 
