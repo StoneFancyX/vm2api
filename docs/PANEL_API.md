@@ -4,6 +4,8 @@
 
 登录：`POST /api/panel/login` `{ username, password }` → token + Cookie `kin_panel_token`（7 天，HttpOnly）。`POST /api/panel/logout` 撤销。`GET /api/panel/me` → `{ user, role, views, capabilities, version }`。`GET/PUT /onboarding` 为首配进度（见「引导」）。
 
+管理台前端固定 `credentials: include`。页面与 API **不同源** 时，须在 API 侧配置受信 Origin：`PANEL_CORS_ORIGINS`（空格或逗号分隔，如 `https://panel.example.com`）和/或 `PUBLIC_BASE_URL` 的 origin。匹配时响应回显该 `Origin`、`Access-Control-Allow-Credentials: true` 与 `Vary: Origin`；未列入的 Origin 仍为 `Access-Control-Allow-Origin: *` 且**不带** credentials（浏览器会拒绝跨源 Cookie 登录）。预检与 JSON/SSE 共用同一 methods/headers 列表（含 `PATCH`）。
+
 `/admin/*` 仅 master / admin 角色。恢复备份期间协议口 503。
 
 ## RBAC
@@ -230,6 +232,14 @@ Analytics 按官方 [`codex_thread_initialized`](https://github.com/openai/codex
 
 `compatibility.persona_preset`（`official` / `official_full` / `zero` / `custom`）和 `compatibility.cache_ttl`（`5m` / `1h`）保存后投影到每个 Claude 槽的 `vms/<id>/run/kernel.json`：`persona_preset`、`system_layout`（`zero`→`zero`，其余→`identity`）、`default_cache_ttl`。响应 `kernel_persona.updated` 是本次字节有变化的槽数。`PATCH /vms/:id` 的 `timezone` / `timezone_follow_proxy` 另把 `timezone` 热写进该槽 `kernel.json`，`timezone_sync.kernel_hot` 表示文件有变化。容器 `TZ` 不在这次写入里。Codex 槽不写。
 
+`compatibility.cch_enabled`（布尔，默认 `true`，设置 → 协议）：开启时统一给出站 billing 补齐 `cch` 并计算真实五位摘要，不按试用 / 订阅状态分流；关闭时仍补齐该参数，但固定为 `cch=00000;`（5 个 0），跳过摘要计算。Node 从当前 routing 对象读取，CLI 在最终 SDK fetch 时读取 `kernel.json.cch_enabled`，不能仅凭五零占位判断是否应密封。native hop 仅保留占位，最终紧凑 SDK JSON 才计算真实摘要；HTTP hop 在最终 Node 请求体密封。密封只替换 billing 参数，不改提示词里的同名文本。billing 的版本、entrypoint 与固定首轮索引策略不随此开关改变，Claude Messages 的 2.1.296 与 Go OAuth / 遥测的 2.1.293 标准 UA 保持各自值。
+
+`inference.session_idle_ttl_seconds`（整数 `1`–`86400`，默认 `600`，设置 → 协议）：投影为 `kernel.json.session_idle_ttl_seconds`，与 CCH 设置集中在同一页，账号池不再重复显示。原生 CLI 槽从最后一次任务完成开始计算空闲时间；到期后由既有巡检释放 session / sticky pin，活动任务不回收。修改不会重置已有空闲计时，也不重启 kernel / CLI；缩短期限可在下一轮巡检释放已空闲足够久的槽。它不是 `sticky.ttl_seconds` 的账号绑定有效期，也不是流空闲超时。
+
+两个新键保存后沿既有本机 / 节点配置同步路径热写，不触发重启；首次加载支持这些字段的新 kernel / CLI ELF 仍需按正常升级流程排空并加载新产物。`/api/panel/routing` 由 Node 校验和持久化，Go `api-kernel` 只转发 API-key 上游请求，不另设面板字段 schema。
+
+内置 `official` / `official_full` 模板及旧模板的自有 agent 回填只生成 `{type: "ephemeral", ttl: "1h"}`，不自动附加 `scope: "global"`（#536）。调用方或自定义模板显式提供的 scope 不在此处全局删除；不新增参数级 400 的换号或重试。
+
 `compatibility.agent_standing`（字符串，≤2000）与四个按档布尔 map `agent_standing_presets` / `agent_standing_hide_presets` / `persona_env_presets` / `persona_hide_presets` 控制常驻约束、约束遮罩、Environment 和整档 usage 遮罩，不投影到 `kernel.json`，Node 每次请求热读。`GET /api/panel/persona/preview-vars?timezone=<IANA>` 返回 system提示词页预览用的真实模板常量（身份句、官方 agent 全文、按该时区渲染的 Environment），不含 billing；时区非法或缺省按 UTC。
 
 `agent_standing_presets` 缺 map/key 默认关闭，只有显式 `true` 启用；`agent_standing` 内置文本保持不变。约束遮罩与 Environment 开关缺省仍为开启，整档遮罩仍回落既有模板/旧设置。保存显式开启的档位不改变其他缺省关闭的档位。
@@ -419,7 +429,7 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 `PUT /proxies/config` 的 `follow_proxy_timezone`（默认 true）：绑定一条代理后，该槽采用出口节点的 IANA 时区（persona `# Environment`、指纹、容器 `TZ`）。操作者在创建时或 `PATCH /vms/:id` 手动指定过时区的槽不受影响。
 
-`PUT /proxies/config` 的 `dns_primary` 保持字符串（默认 `auto`）：远程 SOCKS5 透明出口优先使用的 DNS 上游，可选 `auto`、`https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，或自定义 HTTPS DoH URL（如 `https://cloudflare-dns.com/dns-query`、`https://[2606:4700:4700::1111]/dns-query`）。URL 可包含路径、查询参数和 1–65535 的显式端口，主机须为有效域名或 IP literal；不允许 userinfo、fragment、空白、反斜杠或原始逗号（上游链用逗号分隔，参数中的逗号须编码为 `%2C`）。非法值返回 `invalid_dns_primary`，不改动原设置。所选上游排第一，其余内置上游按默认顺序排在其后作为自动 fallback；自定义 URL 后依次为 `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，`auto` 直接用 kin-egress 内置顺序。DoH 经 SOCKS5 出口访问，域名由 SOCKS5 代理解析；`IP:53` 为经 SOCKS 转发的 DNS-over-TCP，出口到 DNS 服务器之间明文。变更后重载本机已绑定的 `kin-egress`，不重建槽位，响应 `egress` 数组报告各本机出口重载结果；集群节点出口在下次槽位启动 / 重载时读取新设置。本地直连出口不使用此设置。
+`PUT /proxies/config` 的 `dns_primary` 保持字符串（默认 `auto`）：远程 SOCKS5 透明出口优先使用的 DNS 上游，可选 `auto`、`https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，或自定义 HTTPS DoH URL（如 `https://cloudflare-dns.com/dns-query`、`https://[2606:4700:4700::1111]/dns-query`）。URL 可包含路径、查询参数和 1–65535 的显式端口，主机须为有效域名或 IP literal；不允许 userinfo、fragment、空白、反斜杠或原始逗号（上游链用逗号分隔，参数中的逗号须编码为 `%2C`）。非法值返回 `invalid_dns_primary`，不改动原设置。所选上游排第一，其余内置上游按默认顺序排在其后作为自动 fallback；自定义 URL 后依次为 `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，`auto` 直接用 kin-egress 内置顺序。DoH 经 SOCKS5 出口访问，域名由 SOCKS5 代理解析；`IP:53` 为经 SOCKS 转发的 DNS-over-TCP，出口到 DNS 服务器之间明文。变更后重载本机已绑定的 `kin-egress`（先 SIGTERM 等待旧进程退出并释放监听端口，超时后 SIGKILL，再启动新进程；启动失败时 `egress` 数组报告错误），不重建槽位；集群节点出口在下次槽位启动 / 重载时读取新设置。本地直连出口不使用此设置。
 
 `PUT /proxies/config` 的 `dns_disable_svcb_https` 为布尔值（默认 `false`），Web「代理 → 管理」显示「关闭 DNS type 64 / 65」开关。开启后向 SOCKS5 透明出口下发 DNS 覆写参数 `dns_empty_types: [64, 65]`：SVCB（64）和 HTTPS（65）查询返回 `NOERROR` 空答案，不访问上游；A、AAAA 等其它查询正常转发。关闭后移除覆写参数，恢复正常查询。非布尔值返回 `invalid_dns_disable_svcb_https`。保存后重载本机已绑定出口，`egress` 数组报告结果；集群出口在下次槽位启动 / 重载时生效，本地直连出口不使用此设置。
 
