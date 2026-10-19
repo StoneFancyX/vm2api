@@ -11,6 +11,11 @@ describe('seed save follows the telemetry bit', () => {
       reject_client_settings: true,
       reject_client_metadata_identity: true,
       claude_setting: 'A=1',
+      env: {},
+      theme: 'dark',
+      timezoneFollow: true,
+      timezoneFixed: '',
+      locale: 'en_US.UTF-8',
     })
     expect(telemetryEnabled(body)).toBe(true)
     expect(body.disable_nonessential_traffic).toBe(true)
