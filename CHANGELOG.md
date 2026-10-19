@@ -2,6 +2,35 @@
 
 ## 未发布
 
+- 槽位种子页按当前槽 `settings.json` 列出真实配置；`claude.setting` 可编辑播种；缺失文件返回 `null`、空文件返回空串，不用策略默认冒充槽内文件；遥测开关与 sidecar 进程状态分开展示，保存不因遥测进程刷新失败而 502。
+- fleet 遥测刷新在 kin-egress 二进制被替换（含 `(deleted)` 旧进程与脏 pidfile）时，会按 egress 配置扫停全部 helper、等待 `/proc/<pid>` 消失后再绑定新二进制；同一 SOCKS 出口的 stop/start 与 `ensureProxyEgress` 共用 per-proxy 锁，避免并发 telemetry 互相 SIGTERM。（#604）
+- 面板：侧栏「GitHub / 文档」两枚链接不再折行，字体偏宽时「文档」不会逐字竖排，空间不够先缩箭头再省略文字；VM 列表搜索框关闭浏览器自动填充，不再被回填成登录邮箱。
+- 集群页「扩展节点」新增 CPU / 内存 / 容器三列：健康检查（每 30 秒）经同一条 SSH 连接读节点 `/proc` 和 cgroup，口径同本机宿主列；容器 = 节点上全部 Docker 容器内存合计（扣除 inactive_file，同 `docker stats`）。修复本机宿主列 CPU 最高只显示 10%（`Math.min(100, …×1000)/10` 写错上限）。链路列不再折行。
+- 集群槽无需重建 VM 即可更新 Go 槽位服务（kin-worker / kin-egress）：持久化 `slot-bin` 挂载推送二进制，fleet `action=telemetry` 热更新遥测与 egress。（#600）
+- Codex 入站在平台探测前支持 CPR 式 `routing.codex.model_mappings` 精确模型映射；默认 `codex-auto-review` → `gpt-6-luna`（清空该键时回退 `gpt-6.1-sol`）。日志保留 `requested_model` / `upstream_model`；非法或非 GPT 目标 400，不 hop Anthropic。（#526）
+- 保留路径不再给没有可用签名的 thinking 补 `signature: ""`：缺失、空、短于 24、dummy 的删掉；签名可用的留，空正文也留。这一支里的 `redacted_thinking` 不看 data 和签名，原样留；不走保留路径时仍按原规则删。5.5 的非保留路径仍接受短的非 dummy 签名。没有按账号归属过滤签名。
+- 协议页新增「thinking 显示」，`routing.compatibility.thinking_display` 默认 `summarized`。调用方打开 thinking 却要求隐藏（`omitted`、`updates`，或默认隐藏的模型上没写 display）时，出站改成 `summarized`；显式 `passthrough` 保留调用方的值。已保存的 `routing.json` 不写这个键也按 summarized 生效。
+- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.19-kernel-cli`（kin-kernel + cli-node）；Codex kernel 与其余原生产物保持不变。（#594）
+
+## 1.3.199 — 2026-10-19
+
+- 修复集群槽位凭据 pull 时 bytes 相同仍回填 VM 元数据；已运行容器不重建；节点凭证不被旧副本覆盖；原手动禁用 / 撤销 / 冷却保留。（#589）
+- 测试：CRS 出站拒绝 `cc_gateway` 与 `x-claude-code-wiggly-dove` 回归锁。（#590）
+
+已部署机升级：仅需更新 Node 控制面并重启；对受影响集群槽开机一次即可回填元数据；不必重建槽；不要更换 kernel/CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.198 — 2026-10-19
+
+- 一键更新和 `wrap-cli/sync` 同时更新集群槽：控制面拿到新的 kernel、cli-node、cc-node 与 Go `kin-worker` 遥测后，按节点和内核重建内容哈希镜像，再换容器。更新时可选保留原数据或重建新特征；不传时保留。Codex 槽不参与。本地槽仍只换挂载文件并重启进程。crag 数据面的集群槽仍拒绝。槽位页「重装 kernel」对集群槽走同一条路径。（#583）
+- 槽位重建增加两种方式：保留原数据（凭证、指纹、主机名、machine-id、统计）或重建新特征（清家目录并重新生成计算机身份）。列表、详情和重装 kernel 都要先选。（#583）
+- 同一出口的 kin-egress 启动串行化；等待端口释放不再阻塞事件循环（续 #562）。（#578）
+- slot-guest-bin 任意 link 失败都退回复制，并暂存符号链接的真实文件（续 #569/#572）。（#579）
+- sealClaudeCodeCch 只密封 system 计费头，不改写提示词中的同名字面量，也不因提示词字面量报错。（#580）
+- 去掉已保存内置模板上旧默认自带的 `scope: global`（续 #536）。（#581）
+- 面板日志导出与备份下载补 CORS，预检允许 Idempotency-Key（续 #529）。（#582）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。集群需一键更新或 `wrap-cli/sync`（keep）刷新镜像并为 **running** 槽换容器；无迁移，不必单独重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。（traits 重建可能启动已停机的本地槽；集群 `restart:false` 时 kernel_changed 为硬编码，详见 Release notes。）
+
 ## 1.3.197 — 2026-10-19
 
 - 修面板 billingStats：大 usage 库慢聚合时缓存 TTL 改为聚合完成后起算，避免刚写入即过期；复用 costByAccount 汇总全局 total/today 减少全表扫描（#576）
